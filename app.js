@@ -63,17 +63,25 @@ Csv2json.prototype.convert = function() {
                             addLeadingZero(d.getDate())];
                 return darr.join("-");
             };
-            return {
-                    name: data.last_name + " " + data.first_name,
-                    phone: getNumbers(data.phone),
-                    person: {
-                        firstName: data.first_name,
-                        lastName: data.last_name
-                    },
-                    amount: (Math.round(data.amount*100)/100),
-                    date: getDate(data.date),
-                    costCenterNum: getNumbers(data.cc)
-            };
+            var result = {};
+            if(data.last_name && data.first_name) {
+                result.name = data.last_name + " " + data.first_name;
+                result.person = {
+                    firstName: data.first_name,
+                    lastName: data.last_name
+                }
+            } else {
+                result.name = "";
+                result.person = {
+                    firstName: "",
+                    lastName: ""
+                }
+            }
+            result.phone = data.phone ? getNumbers(data.phone) : "";
+            result.amount = data.amount ? (Math.round(data.amount*100)/100) : 0;
+            result.date = data.date ? getDate(data.date) : "";
+            result.costCenterNum = data.cc ? getNumbers(data.cc) : "";
+            return result;
         };
 
         line = line.toString();
@@ -81,7 +89,12 @@ Csv2json.prototype.convert = function() {
         if(str.length < 1) {
             return;
         }
-        var items = str.split(my.separator);
+        var items = [];
+        if(str.includes(my.separator)) {
+            var items = str.split(my.separator);
+        } else {
+            items[0] = str;
+        }
         // first line in every file will contain property names
         if(props.length < 1) {
             props = items;
