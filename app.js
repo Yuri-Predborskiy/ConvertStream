@@ -1,142 +1,159 @@
-console.log('Loading zip...');
 var StreamZip = require('node-stream-zip');
-var Transform = require('stream').Transform;  
-var inherits = require('util').inherits;
 var fs = require('fs');
-var split = require('stream-split');
+var es = require('event-stream');
 
-var splitter = new split(new Buffer("\r\n"));
-var writeStream = fs.createWriteStream('res.json', { flags: 'w' });
-var firstCall = true; // change to false on first file
-var separator = "||";
-var dirName = "./";
-var archiveName = "archive.zip";
-var props = [];
-var propsLine = "";
-
-var zip = new StreamZip({
-    file: dirName + archiveName
-    //file: 'd:/temp/node_src.zip'
-});
-
-zip.on('error', function(err) { console.error('ERROR: ' + err); });
-zip.on('ready', function() {
-    //console.dir(zip.entry('README.md'));
-    console.log('Done in ' + process.uptime() + '. Entries read: ' + zip.entriesCount);
-    var files = zip.entries();
-    var keys = Object.keys(files);
-    for(var i = 0; i < keys.length; i++) {
-        if(files.hasOwnProperty(keys[i])) {
-            zip.stream(files[keys[i]], function(err, stm) {
-                if(err) {
-                    return console.error(err);
-                }
-                stm
-                .pipe(splitter)
-/*
-                .on('data', function (line) {
-                    line = line.replace(/"/g, "").trim();
-                    // skip empty lines
-                    if(line.length < 1) {
-                        return;
-                    }
-                    var items = line.split(separator);
-                    // if this is a first line - save it as object keys
-                    if(props.length < 1) {
-                        props = items;
-                        propsLine = line;
-                        console.log(props);
-                        return;
-                    } else if(line === propsLine) {
-                        // skip repeating property lines
-                        return;
-                    }
-                    var item = {};
-                    // turn each line into array of values and assign them to properties
-                    for(var j = 0; j < props.length; j++) {
-                        item[props[j]] = items[j];
-                    }
-                    this.push("," + JSON.stringify(item, null, 2));
-                    // console.log("line: \n" + JSON.stringify(item, null, 2));
-                })
-*/
-                .pipe(JSONEncode())
-                // .pipe(process.stdout)
-                .pipe(writeStream)
-                ;
-            });
-        }
+var Csv2json = function (config) {
+    if(typeof config === "string") {
+        config = { pathToFile: config };
+    } else if(!config) {
+        config = {};
     }
-});
-zip.on('extract', function(entry, file) {
-    console.log('extract', entry.name, file);
-});
-
-function JSONEncode(options) {  
-  if ( ! (this instanceof JSONEncode))
-    return new JSONEncode(options);
-
-  if (! options) options = {};
-  options.objectMode = true;
-  Transform.call(this, options);
-}
-
-inherits(JSONEncode, Transform);
-
-JSONEncode.prototype._transform = function _transform(line, encoding, callback) {  
-// v1
-    // obj = obj.toString().trim();
-    // if(obj.includes("114")) {
-    //     console.log("\n\n\nerr:");
-    //     console.log(obj);
-    // }
-    // // convert incoming text into lines and filter out new lines
-    // var lines = obj.replace(/\"/g,"").split(/(\r?\n)/).filter(function(item) {
-    //     return !/(\r?\n)/.test(item);
-    // });
-    // // turn 1st line into array of property names
-    // var props = lines[0].split(separator);
-    // var mylist = "";
-    // for(var i = 1; i < lines.length; i++) {
-    //     var line = lines[i].split(separator);
-    //     var item = {};
-    //     // turn each line into array of values and assign them to properties
-    //     for(var j = 0; j < props.length; j++) {
-    //         item[props[j]] = line[j];
-    //     }
-    //     mylist = mylist + (firstCall?"":",\n") + JSON.stringify(item, null, 2);
-    //     firstCall = false;
-    // }
-    line = line.toString().replace(/\"/g, "").trim();
-    console.log("line: \n" + line);
-    // skip empty lines
-    if(line.length < 1) {
-        return;
-    }
-    var items = line.split(separator);
-    // if this is a first line - save it as object keys
-    if(props.length < 1) {
-        console.log("saving props");
-        props = items;
-        propsLine = line;
-        console.log(props);
-        return;
-    } else if(line === propsLine) {
-        // skip repeating property lines
-        return;
-    }
-    console.log("passed line test");
-    var item = {};
-    // turn each line into array of values and assign them to properties
-    for(var j = 0; j < props.length; j++) {
-        item[props[j]] = items[j];
-    }
-    this.push("," + JSON.stringify(item, null, 2));
-    // console.log("line: \n" + JSON.stringify(item, null, 2));
-    // this.push(mylist);
-    callback();
+    this.file = config.pathToFile || "./data/data.zip";
+    this.jsonFile = config.jsonFile || (this.file.substring(0, this.file.lastIndexOf("/")+1) + 
+        this.file.substring(this.file.lastIndexOf("/")+1, this.file.length-4) + ".json");
+    this.linesToSave = config.linesToSave || 1000;
+    this.separator = config.separator || "||";
 };
 
-writeStream.on('close', function () {
-    console.log('All done!');
-});
+Csv2json.prototype.convert = function() {
+    var checkFileExtension = function(fn) {
+        return (fn.lastIndexOf(".") === fn.length-4 && fn.substring(fn.length-3).toLowerCase() === 'zip');
+    };
+    var ln = 0;
+    var data = "";
+    var firstSave = true; // file is saved for the first time - clear file contents
+    var firstLine = true; // first line of data - no leading comma
+    var props = [];
+    var propsLine = "";
+    var my = this;
+    
+    // check if parameters are correct
+    if(!checkFileExtension(this.file)) {
+        console.log("Error: Incorrect file extension.");
+        return;
+    }
+    if(!this.separator) {
+        console.log("Error: Separator not provided.");
+    }
+    if(this.linesToSave < 100) {
+        this.linesToSave = 100;
+    } else if (this.linesToSave > 100000) {
+        this.linesToSave = 100000;
+    }
+
+    // helper function to process input object into output object format
+    var processLine = function (line) {
+        //console.log("processing line: " + ln + " file: " + my.file + );
+        var processObject = function (data) {
+            var getNumbers = function(n) {
+                var re = /\d+/g;
+                return n.match(re).join("");
+            };
+            // add leading zero if needed
+            var addLeadingZero = function(n) {
+                n = n.toString();
+                return (n.length < 2) ? "0" + n : n;
+            }
+            // transforms date "D/M/YYYY" into YYYY-MM-DD format
+            var getDate = function(ds) {
+                ds = ds.split("/");
+                var d = new Date(ds[2], ds[1]-1, ds[0]);
+                var darr = [d.getFullYear(), 
+                            addLeadingZero(d.getMonth()+1), 
+                            addLeadingZero(d.getDate())];
+                return darr.join("-");
+            };
+            return {
+                    name: data.last_name + " " + data.first_name,
+                    phone: getNumbers(data.phone),
+                    person: {
+                        firstName: data.first_name,
+                        lastName: data.last_name
+                    },
+                    amount: (Math.round(data.amount*100)/100),
+                    date: getDate(data.date),
+                    costCenterNum: getNumbers(data.cc)
+            };
+        };
+
+        line = line.toString();
+        var str = line.replace(/\"/g, "").trim();
+        if(str.length < 1) {
+            return;
+        }
+        var items = str.split(my.separator);
+        // first line in every file will contain property names
+        if(props.length < 1) {
+            props = items;
+            propsLine = line;
+            return;
+        } else if(line === propsLine) {
+            return;
+        }
+        var obj = {};
+        for(var j = 0; j < props.length; j++) {
+            obj[props[j]] = items[j];
+        }
+        return JSON.stringify(processObject(obj), null, 2);
+    }; // end of processline
+
+    // function that saves accumulated string data into JSON file
+    var saveToFile = function (data, callback) {
+        var flag = "a";
+        if(firstSave) {
+            firstSave = false;
+            flag = "w";
+        }
+        fs.writeFileSync(my.jsonFile, data, { flag: flag });
+        return "";
+    }
+
+    var zip = new StreamZip({
+        file: this.file
+    });
+    zip.on('error', function(err) { console.error('Error reading archive. ' + err); });
+    zip.on('ready', function() {
+        var files = zip.entries();
+        var keys = Object.keys(files);
+        for(var i = 0; i < keys.length; i++) {
+            if(files.hasOwnProperty(keys[i])) {
+                zip.stream(files[keys[i]], (err, stm) => {
+                    if(err) {
+                        console.error(err);
+                        return;
+                    }
+                    stm
+                    .pipe(es.split())
+                    .pipe(es.mapSync(function(line) {
+                        stm.pause();
+                        ln++;
+                        var processed = processLine(line);
+                        if (!!processed) { // if has data
+                            if(firstLine) {
+                                firstLine = false;
+                                data += processed;
+                            } else {
+                                data += ",\n" + processed;
+                            }
+                        }
+
+                        if (ln % my.linesToSave === 0) {
+                            data = saveToFile(data);
+                        }
+                        stm.resume();
+                    })
+                    .on('error', function(err) {
+                        console.error('Error reading file. ' + err);
+                        return;
+                    })
+                    .on('end', function() {
+                        data = saveToFile(data);
+                    })
+                    )
+                });
+            }
+        }
+    });
+};
+
+module.exports = Csv2json;
