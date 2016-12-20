@@ -1,5 +1,5 @@
 var Converter = require("./app.js");
-var conv = new Converter("./data/data.zip");
+var conv = new Converter("./data/archive.zip");
 
 function callback(err) {
 	if(err) {
