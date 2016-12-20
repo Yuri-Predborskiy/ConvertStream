@@ -15,7 +15,10 @@ var Csv2json = function (config) {
     this.separator = config.separator || "||";
 };
 
-Csv2json.prototype.convert = function() {
+Csv2json.prototype.convert = function(callback) {
+	if(!callback) {
+		callback = function() {};
+	}
     var checkFileExtension = function(fn) {
         return (fn.lastIndexOf(".") === fn.length-4 && fn.substring(fn.length-3).toLowerCase() === 'zip');
     };
@@ -111,7 +114,7 @@ Csv2json.prototype.convert = function() {
     }; // end of processline
 
     // function that saves accumulated string data into JSON file
-    var saveToFile = function (data, callback) {
+    var saveToFile = function (data) {
         var flag = "a";
         if(firstSave) {
             firstSave = false;
@@ -121,6 +124,56 @@ Csv2json.prototype.convert = function() {
         return "";
     }
 
+	var readNextFile = function() {
+		if(fileArray.length > 0) {
+			streamFile(fileArray.shift());
+		} else {
+			callback();
+		}
+	}
+
+	var streamFile = function(file) {
+        zip.stream(file, (err, stm) => {
+            if(err) {
+                callback(err);
+                return;
+            }
+            stm
+            .pipe(es.split())
+            .pipe(es.mapSync(function(line) {
+                stm.pause();
+                ln++;
+                var processed = processLine(line);
+                if (!!processed) { // if has data
+                    if(firstLine) {
+                        firstLine = false;
+                        data += processed;
+                    } else {
+                        data += ",\n" + processed;
+                    }
+                }
+
+                if (ln % my.linesToSave === 0) {
+                    data = saveToFile(data);
+                    ln = 0;
+                }
+                stm.resume();
+            })
+            .on('error', function(err) {
+                console.error('Error reading file. ' + err);
+                return;
+            })
+            .on('end', function() {
+                data = saveToFile(data);
+                // console.log("finished file");
+                readNextFile(); // finished one file - start next
+            })
+            )
+        });
+
+	}
+
+    var fileArray = [];
     var zip = new StreamZip({
         file: this.file
     });
@@ -130,42 +183,10 @@ Csv2json.prototype.convert = function() {
         var keys = Object.keys(files);
         for(var i = 0; i < keys.length; i++) {
             if(files.hasOwnProperty(keys[i])) {
-                zip.stream(files[keys[i]], (err, stm) => {
-                    if(err) {
-                        console.error(err);
-                        return;
-                    }
-                    stm
-                    .pipe(es.split())
-                    .pipe(es.mapSync(function(line) {
-                        stm.pause();
-                        ln++;
-                        var processed = processLine(line);
-                        if (!!processed) { // if has data
-                            if(firstLine) {
-                                firstLine = false;
-                                data += processed;
-                            } else {
-                                data += ",\n" + processed;
-                            }
-                        }
-
-                        if (ln % my.linesToSave === 0) {
-                            data = saveToFile(data);
-                        }
-                        stm.resume();
-                    })
-                    .on('error', function(err) {
-                        console.error('Error reading file. ' + err);
-                        return;
-                    })
-                    .on('end', function() {
-                        data = saveToFile(data);
-                    })
-                    )
-                });
+            	fileArray.push(keys[i]);
             }
         }
+        readNextFile();
     });
 };
 
